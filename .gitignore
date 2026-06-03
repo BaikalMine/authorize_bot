@@ -1,0 +1,9 @@
+.env
+*.exe
+*.log
+.appdata/
+.gocache/
+.gomodcache/
+dist/
+tmp/
+autorize-bot

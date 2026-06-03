@@ -1,0 +1,9 @@
+.git
+.appdata
+.gocache
+.gomodcache
+.env
+dist
+tmp
+*.exe
+*.log
