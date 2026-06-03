@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     image: autorize-bot-tg:latest
     container_name: autorize-bot-tg
+    network_mode: host
     restart: unless-stopped
     env_file:
       - path: .env

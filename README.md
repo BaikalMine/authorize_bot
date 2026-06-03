@@ -33,6 +33,8 @@ Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
+В `docker-compose.yml` включен `network_mode: host`, чтобы бот ходил в Telegram через сетевой стек хоста. Это приближает Docker-запуск к обычному запуску Go-бинарника на сервере и убирает проблемы Docker bridge/NAT для исходящих соединений.
+
 Логи:
 
 ```powershell
@@ -58,10 +60,13 @@ go run .
 | --- | --- | --- |
 | `BOT_TOKEN` | обязательна | Токен Telegram-бота |
 | `TELEGRAM_API_ENDPOINT` | официальный API | Кастомный Bot API endpoint, формат `https://host/bot%s/%s` |
+| `TELEGRAM_CONNECT_TIMEOUT` | `10s` | Таймаут TCP/TLS подключения к Telegram |
+| `TELEGRAM_REQUEST_TIMEOUT` | `POLLING_TIMEOUT + 30s` | Общий таймаут HTTP-запроса к Telegram |
 | `CAPTCHA_TIMEOUT` | `120s` | Время на прохождение капчи |
 | `POLLING_TIMEOUT` | `60` | Таймаут long polling в секундах |
 | `STARTUP_RETRIES` | `10` | Количество повторов подключения к Telegram при старте |
 | `STARTUP_RETRY_DELAY` | `10s` | Пауза между повторами подключения |
+| `NETWORK_DIAGNOSTICS` | `true` | Печатать DNS/TCP диагностику при ошибке подключения |
 | `KICK_ON_TIMEOUT` | `true` | Удалять пользователя при истечении таймаута |
 | `LOG_LEVEL` | `info` | Зарезервировано под будущую настройку логов |
 

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +62,9 @@ func newBotWithRetry(cfg config.Config) (*tgbotapi.BotAPI, error) {
 		}
 
 		lastErr = err
+		if attempt == 1 && cfg.NetworkDiagnostics {
+			logTelegramNetworkDiagnostics(cfg)
+		}
 		if attempt == attempts {
 			break
 		}
@@ -73,10 +81,103 @@ func newBotWithRetry(cfg config.Config) (*tgbotapi.BotAPI, error) {
 }
 
 func newBot(cfg config.Config) (*tgbotapi.BotAPI, error) {
+	endpoint := tgbotapi.APIEndpoint
 	if cfg.TelegramAPIEndpoint != "" {
-		return tgbotapi.NewBotAPIWithAPIEndpoint(cfg.BotToken, cfg.TelegramAPIEndpoint)
+		endpoint = cfg.TelegramAPIEndpoint
 	}
-	return tgbotapi.NewBotAPI(cfg.BotToken)
+
+	return tgbotapi.NewBotAPIWithClient(cfg.BotToken, endpoint, telegramHTTPClient(cfg))
+}
+
+func telegramHTTPClient(cfg config.Config) *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   cfg.TelegramConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   cfg.TelegramConnectTimeout,
+		ResponseHeaderTimeout: cfg.TelegramRequestTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   cfg.TelegramRequestTimeout,
+	}
+}
+
+func logTelegramNetworkDiagnostics(cfg config.Config) {
+	endpoint := cfg.TelegramAPIEndpoint
+	if endpoint == "" {
+		endpoint = tgbotapi.APIEndpoint
+	}
+
+	host, port := endpointHostPort(endpoint)
+	if host == "" {
+		log.Printf("telegram network diagnostics: cannot parse endpoint host from %q", endpoint)
+		return
+	}
+
+	log.Printf("telegram network diagnostics: endpoint_host=%s endpoint_port=%s proxy_env=%s", host, port, proxyEnvSummary())
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.TelegramConnectTimeout)
+	defer cancel()
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		log.Printf("telegram network diagnostics: dns lookup failed: %v", err)
+	} else {
+		log.Printf("telegram network diagnostics: dns addresses=%s", formatIPAddrs(addrs))
+	}
+
+	conn, err := (&net.Dialer{Timeout: cfg.TelegramConnectTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		log.Printf("telegram network diagnostics: tcp connect failed: %v", err)
+		return
+	}
+	_ = conn.Close()
+	log.Printf("telegram network diagnostics: tcp connect ok")
+}
+
+func endpointHostPort(endpoint string) (string, string) {
+	rawURL := fmt.Sprintf(endpoint, "token", "getMe")
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", ""
+	}
+
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+
+	return parsed.Hostname(), port
+}
+
+func proxyEnvSummary() string {
+	keys := []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy"}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		state := "empty"
+		if os.Getenv(key) != "" {
+			state = "set"
+		}
+		parts = append(parts, key+"="+state)
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatIPAddrs(addrs []net.IPAddr) string {
+	values := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		values = append(values, addr.String())
+	}
+	return strings.Join(values, ",")
 }
 
 func handleMessage(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Config, message *tgbotapi.Message) {

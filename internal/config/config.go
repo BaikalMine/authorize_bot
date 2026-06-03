@@ -8,26 +8,31 @@ import (
 )
 
 type Config struct {
-	BotToken            string
-	TelegramAPIEndpoint string
-	CaptchaTimeout      time.Duration
-	PollingTimeout      int
-	StartupRetries      int
-	StartupRetryDelay   time.Duration
-	KickOnTimeout       bool
-	LogLevel            string
+	BotToken               string
+	TelegramAPIEndpoint    string
+	TelegramConnectTimeout time.Duration
+	TelegramRequestTimeout time.Duration
+	CaptchaTimeout         time.Duration
+	PollingTimeout         int
+	StartupRetries         int
+	StartupRetryDelay      time.Duration
+	NetworkDiagnostics     bool
+	KickOnTimeout          bool
+	LogLevel               string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		BotToken:            os.Getenv("BOT_TOKEN"),
-		TelegramAPIEndpoint: os.Getenv("TELEGRAM_API_ENDPOINT"),
-		CaptchaTimeout:      120 * time.Second,
-		PollingTimeout:      60,
-		StartupRetries:      10,
-		StartupRetryDelay:   10 * time.Second,
-		KickOnTimeout:       true,
-		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
+		BotToken:               os.Getenv("BOT_TOKEN"),
+		TelegramAPIEndpoint:    os.Getenv("TELEGRAM_API_ENDPOINT"),
+		TelegramConnectTimeout: 10 * time.Second,
+		CaptchaTimeout:         120 * time.Second,
+		PollingTimeout:         60,
+		StartupRetries:         10,
+		StartupRetryDelay:      10 * time.Second,
+		NetworkDiagnostics:     true,
+		KickOnTimeout:          true,
+		LogLevel:               envOrDefault("LOG_LEVEL", "info"),
 	}
 
 	if cfg.BotToken == "" {
@@ -50,6 +55,24 @@ func Load() (Config, error) {
 		cfg.PollingTimeout = timeout
 	}
 
+	cfg.TelegramRequestTimeout = time.Duration(cfg.PollingTimeout+30) * time.Second
+
+	if raw := os.Getenv("TELEGRAM_CONNECT_TIMEOUT"); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TelegramConnectTimeout = timeout
+	}
+
+	if raw := os.Getenv("TELEGRAM_REQUEST_TIMEOUT"); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TelegramRequestTimeout = timeout
+	}
+
 	if raw := os.Getenv("STARTUP_RETRIES"); raw != "" {
 		retries, err := strconv.Atoi(raw)
 		if err != nil {
@@ -64,6 +87,14 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.StartupRetryDelay = delay
+	}
+
+	if raw := os.Getenv("NETWORK_DIAGNOSTICS"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.NetworkDiagnostics = value
 	}
 
 	if raw := os.Getenv("KICK_ON_TIMEOUT"); raw != "" {
