@@ -64,6 +64,10 @@ go run .
 | `TELEGRAM_CONNECT_TIMEOUT` | `10s` | Таймаут TCP/TLS подключения к Telegram |
 | `TELEGRAM_REQUEST_TIMEOUT` | `POLLING_TIMEOUT + 30s` | Общий таймаут HTTP-запроса к Telegram |
 | `CAPTCHA_TIMEOUT` | `120s` | Время на прохождение капчи |
+| `CAPTCHA_MAX_ATTEMPTS` | `3` | Максимум неверных ответов до удаления проверки |
+| `MAX_ACTIVE_CHALLENGES` | `1000` | Общий лимит активных капч в памяти |
+| `MAX_ACTIVE_CHALLENGES_PER_CHAT` | `200` | Лимит активных капч на один чат |
+| `CLEANUP_BATCH_SIZE` | `100` | Максимум истекших капч, обрабатываемых за один cleanup tick |
 | `POLLING_TIMEOUT` | `60` | Таймаут long polling в секундах |
 | `STARTUP_RETRIES` | `10` | Количество повторов подключения к Telegram при старте |
 | `STARTUP_RETRY_DELAY` | `10s` | Пауза между повторами подключения |
@@ -101,13 +105,13 @@ TELEGRAM_API_ENDPOINT=http://telegram-bot-api:8081/bot%s/%s
 
 ## Сборка
 
-Проект рассчитан на Go `1.26.1`.
+Проект рассчитан на Go `1.26.4`.
 
 ```powershell
 go build -o autorize-bot.exe .
 ```
 
-Docker-сборка использует официальный образ `golang:1.26.1-alpine`.
+Docker-сборка использует официальный образ `golang:1.26.4-alpine`.
 
 ## Важно
 

@@ -2,11 +2,26 @@ package captcha
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 )
+
+var (
+	// ErrLimitReached is returned when the global active challenge limit is full.
+	ErrLimitReached = errors.New("captcha challenge limit reached")
+
+	// ErrChatLimitReached is returned when a chat-specific challenge limit is full.
+	ErrChatLimitReached = errors.New("captcha chat challenge limit reached")
+)
+
+// Limits controls how many active challenges the in-memory store accepts.
+type Limits struct {
+	MaxActive        int
+	MaxActivePerChat int
+}
 
 type Challenge struct {
 	ChatID    int64
@@ -15,17 +30,27 @@ type Challenge struct {
 	Question  string
 	Answer    int
 	Options   []int
+	Attempts  int
 	ExpiresAt time.Time
 }
 
 type Store struct {
 	mu         sync.RWMutex
-	challenges map[string]Challenge
+	limits     Limits
+	challenges map[challengeKey]Challenge
+	chatCounts map[int64]int
 }
 
-func NewStore() *Store {
+type challengeKey struct {
+	chatID int64
+	userID int64
+}
+
+func NewStore(limits Limits) *Store {
 	return &Store{
-		challenges: make(map[string]Challenge),
+		limits:     limits,
+		challenges: make(map[challengeKey]Challenge),
+		chatCounts: make(map[int64]int),
 	}
 }
 
@@ -67,8 +92,19 @@ func (s *Store) Create(chatID, userID int64, timeout time.Duration) (Challenge, 
 	}
 
 	s.mu.Lock()
-	s.challenges[key(chatID, userID)] = challenge
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+
+	k := key(chatID, userID)
+	if _, exists := s.challenges[k]; !exists {
+		if s.limits.MaxActive > 0 && len(s.challenges) >= s.limits.MaxActive {
+			return Challenge{}, ErrLimitReached
+		}
+		if s.limits.MaxActivePerChat > 0 && s.chatCounts[chatID] >= s.limits.MaxActivePerChat {
+			return Challenge{}, ErrChatLimitReached
+		}
+		s.chatCounts[chatID]++
+	}
+	s.challenges[k] = challenge
 
 	return challenge, nil
 }
@@ -77,12 +113,13 @@ func (s *Store) SetMessageID(chatID, userID int64, messageID int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	challenge, ok := s.challenges[key(chatID, userID)]
+	k := key(chatID, userID)
+	challenge, ok := s.challenges[k]
 	if !ok {
 		return
 	}
 	challenge.MessageID = messageID
-	s.challenges[key(chatID, userID)] = challenge
+	s.challenges[k] = challenge
 }
 
 func (s *Store) Get(chatID, userID int64) (Challenge, bool) {
@@ -93,28 +130,82 @@ func (s *Store) Get(chatID, userID int64) (Challenge, bool) {
 	return challenge, ok
 }
 
+func (s *Store) GetValid(chatID, userID int64, now time.Time) (challenge Challenge, ok bool, expired bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k := key(chatID, userID)
+	challenge, ok = s.challenges[k]
+	if !ok {
+		return Challenge{}, false, false
+	}
+	if !now.Before(challenge.ExpiresAt) {
+		s.deleteLocked(k)
+		return challenge, false, true
+	}
+	return challenge, true, false
+}
+
+func (s *Store) RecordFailedAttempt(chatID, userID int64, maxAttempts int) (remaining int, locked bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k := key(chatID, userID)
+	challenge, ok := s.challenges[k]
+	if !ok {
+		return 0, true
+	}
+
+	challenge.Attempts++
+	if maxAttempts > 0 && challenge.Attempts >= maxAttempts {
+		s.deleteLocked(k)
+		return 0, true
+	}
+	s.challenges[k] = challenge
+
+	if maxAttempts <= 0 {
+		return 0, false
+	}
+	return maxAttempts - challenge.Attempts, false
+}
+
 func (s *Store) Delete(chatID, userID int64) {
 	s.mu.Lock()
-	delete(s.challenges, key(chatID, userID))
+	s.deleteLocked(key(chatID, userID))
 	s.mu.Unlock()
 }
 
-func (s *Store) Expired(now time.Time) []Challenge {
+func (s *Store) Expired(now time.Time, limit int) []Challenge {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var expired []Challenge
 	for key, challenge := range s.challenges {
-		if now.After(challenge.ExpiresAt) {
+		if !now.Before(challenge.ExpiresAt) {
 			expired = append(expired, challenge)
-			delete(s.challenges, key)
+			s.deleteLocked(key)
+			if limit > 0 && len(expired) >= limit {
+				break
+			}
 		}
 	}
 	return expired
 }
 
-func key(chatID, userID int64) string {
-	return fmt.Sprintf("%d:%d", chatID, userID)
+func (s *Store) deleteLocked(k challengeKey) {
+	challenge, ok := s.challenges[k]
+	if !ok {
+		return
+	}
+	delete(s.challenges, k)
+	s.chatCounts[challenge.ChatID]--
+	if s.chatCounts[challenge.ChatID] <= 0 {
+		delete(s.chatCounts, challenge.ChatID)
+	}
+}
+
+func key(chatID, userID int64) challengeKey {
+	return challengeKey{chatID: chatID, userID: userID}
 }
 
 func randomInt(min, max int) (int, error) {

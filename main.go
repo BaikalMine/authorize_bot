@@ -20,6 +20,11 @@ import (
 
 const callbackPrefix = "captcha"
 
+type telegramClient interface {
+	Request(tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
+	Send(tgbotapi.Chattable) (tgbotapi.Message, error)
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -33,7 +38,10 @@ func main() {
 
 	log.Printf("authorized as @%s", bot.Self.UserName)
 
-	store := captcha.NewStore()
+	store := captcha.NewStore(captcha.Limits{
+		MaxActive:        cfg.MaxActiveChallenges,
+		MaxActivePerChat: cfg.MaxActiveChallengesPerChat,
+	})
 	go cleanupExpired(bot, store, cfg)
 
 	updateConfig := tgbotapi.NewUpdate(0)
@@ -42,11 +50,11 @@ func main() {
 
 	for update := range updates {
 		if update.Message != nil {
-			handleMessage(bot, store, cfg, update.Message)
+			handleMessage(bot, bot.Self.ID, store, cfg, update.Message)
 			continue
 		}
 		if update.CallbackQuery != nil {
-			handleCallback(bot, store, update.CallbackQuery)
+			handleCallback(bot, store, cfg, update.CallbackQuery)
 		}
 	}
 }
@@ -183,36 +191,53 @@ func formatIPAddrs(addrs []net.IPAddr) string {
 	return strings.Join(values, ",")
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Config, message *tgbotapi.Message) {
+func handleMessage(bot telegramClient, botID int64, store *captcha.Store, cfg config.Config, message *tgbotapi.Message) {
 	if len(message.NewChatMembers) == 0 {
 		return
 	}
 
 	for _, user := range message.NewChatMembers {
-		if user.ID == bot.Self.ID || user.IsBot {
+		if user.ID == botID || user.IsBot {
 			continue
 		}
 
 		if err := restrictUser(bot, message.Chat.ID, user.ID); err != nil {
-			log.Printf("restrict user %d in chat %d: %v", user.ID, message.Chat.ID, err)
+			log.Printf("restrict user %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick unrestricted user %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
+			continue
 		}
 
 		challenge, err := store.Create(message.Chat.ID, user.ID, cfg.CaptchaTimeout)
 		if err != nil {
 			log.Printf("create captcha for user %d: %v", user.ID, err)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick user without captcha %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
 			continue
 		}
 
 		sent, err := bot.Send(captchaMessage(message.Chat.ID, user, challenge, cfg.CaptchaTimeout))
 		if err != nil {
-			log.Printf("send captcha to user %d: %v", user.ID, err)
+			log.Printf("send captcha to user %d: %s", user.ID, safeTelegramError(err, cfg.BotToken))
+			store.Delete(message.Chat.ID, user.ID)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick user without captcha message %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
 			continue
 		}
 		store.SetMessageID(message.Chat.ID, user.ID, sent.MessageID)
 	}
 }
 
-func handleCallback(bot *tgbotapi.BotAPI, store *captcha.Store, query *tgbotapi.CallbackQuery) {
+func handleCallback(bot telegramClient, store *captcha.Store, cfg config.Config, query *tgbotapi.CallbackQuery) {
 	chatID, userID, answer, ok := parseCallback(query.Data)
 	if !ok {
 		return
@@ -223,19 +248,40 @@ func handleCallback(bot *tgbotapi.BotAPI, store *captcha.Store, query *tgbotapi.
 		return
 	}
 
-	challenge, ok := store.Get(chatID, userID)
+	challenge, ok, expired := store.GetValid(chatID, userID, time.Now())
 	if !ok {
 		answerCallback(bot, query.ID, "Проверка уже истекла.")
+		if expired && cfg.KickOnTimeout {
+			if err := kickUser(bot, chatID, userID); err != nil {
+				log.Printf("kick expired callback user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+			}
+		}
 		return
 	}
 
 	if answer != challenge.Answer {
+		remaining, locked := store.RecordFailedAttempt(chatID, userID, cfg.CaptchaMaxAttempts)
+		if locked {
+			answerCallback(bot, query.ID, "Слишком много неверных ответов.")
+			edit := tgbotapi.NewEditMessageText(chatID, challenge.MessageID, "Проверка не пройдена.")
+			_, _ = bot.Send(edit)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, chatID, userID); err != nil {
+					log.Printf("kick failed captcha user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
+			return
+		}
+		if remaining > 0 {
+			answerCallback(bot, query.ID, fmt.Sprintf("Неверно. Осталось попыток: %d.", remaining))
+			return
+		}
 		answerCallback(bot, query.ID, "Неверно. Попробуйте еще раз.")
 		return
 	}
 
 	if err := unrestrictUser(bot, chatID, userID); err != nil {
-		log.Printf("unrestrict user %d in chat %d: %v", userID, chatID, err)
+		log.Printf("unrestrict user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
 		answerCallback(bot, query.ID, "Ответ верный, но бот не смог вернуть права. Проверьте права администратора.")
 		return
 	}
@@ -253,10 +299,10 @@ func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Confi
 	defer ticker.Stop()
 
 	for range ticker.C {
-		for _, challenge := range store.Expired(time.Now()) {
+		for _, challenge := range store.Expired(time.Now(), cfg.CleanupBatchSize) {
 			if cfg.KickOnTimeout {
 				if err := kickUser(bot, challenge.ChatID, challenge.UserID); err != nil {
-					log.Printf("kick expired user %d in chat %d: %v", challenge.UserID, challenge.ChatID, err)
+					log.Printf("kick expired user %d in chat %d: %s", challenge.UserID, challenge.ChatID, safeTelegramError(err, cfg.BotToken))
 				}
 			}
 			if challenge.MessageID != 0 {
@@ -292,7 +338,7 @@ func captchaMessage(chatID int64, user tgbotapi.User, challenge captcha.Challeng
 	return msg
 }
 
-func restrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func restrictUser(bot telegramClient, chatID int64, userID int64) error {
 	cfg := tgbotapi.RestrictChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -314,7 +360,7 @@ func restrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
 	return err
 }
 
-func unrestrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func unrestrictUser(bot telegramClient, chatID int64, userID int64) error {
 	cfg := tgbotapi.RestrictChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -335,7 +381,7 @@ func unrestrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
 	return err
 }
 
-func kickUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func kickUser(bot telegramClient, chatID int64, userID int64) error {
 	ban := tgbotapi.BanChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -379,7 +425,7 @@ func parseCallback(data string) (chatID int64, userID int64, answer int, ok bool
 	return parsedChatID, parsedUserID, parsedAnswer, true
 }
 
-func answerCallback(bot *tgbotapi.BotAPI, queryID, text string) {
+func answerCallback(bot telegramClient, queryID, text string) {
 	callback := tgbotapi.NewCallback(queryID, text)
 	_, _ = bot.Request(callback)
 }
@@ -422,4 +468,11 @@ func redactToken(value, token string) string {
 		return value
 	}
 	return strings.ReplaceAll(value, token, "<redacted>")
+}
+
+func safeTelegramError(err error, token string) string {
+	if err == nil {
+		return ""
+	}
+	return redactToken(err.Error(), token)
 }
