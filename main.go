@@ -21,9 +21,9 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	bot, err := tgbotapi.NewBotAPI(cfg.BotToken)
+	bot, err := newBotWithRetry(cfg)
 	if err != nil {
-		log.Fatalf("telegram init error: %v", err)
+		log.Fatalf("telegram init error: %v", redactToken(err.Error(), cfg.BotToken))
 	}
 
 	log.Printf("authorized as @%s", bot.Self.UserName)
@@ -44,6 +44,39 @@ func main() {
 			handleCallback(bot, store, update.CallbackQuery)
 		}
 	}
+}
+
+func newBotWithRetry(cfg config.Config) (*tgbotapi.BotAPI, error) {
+	var lastErr error
+	attempts := max(1, cfg.StartupRetries+1)
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		bot, err := newBot(cfg)
+		if err == nil {
+			return bot, nil
+		}
+
+		lastErr = err
+		if attempt == attempts {
+			break
+		}
+
+		log.Printf(
+			"telegram init failed, retrying in %s: %s",
+			cfg.StartupRetryDelay,
+			redactToken(err.Error(), cfg.BotToken),
+		)
+		time.Sleep(cfg.StartupRetryDelay)
+	}
+
+	return nil, lastErr
+}
+
+func newBot(cfg config.Config) (*tgbotapi.BotAPI, error) {
+	if cfg.TelegramAPIEndpoint != "" {
+		return tgbotapi.NewBotAPIWithAPIEndpoint(cfg.BotToken, cfg.TelegramAPIEndpoint)
+	}
+	return tgbotapi.NewBotAPI(cfg.BotToken)
 }
 
 func handleMessage(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Config, message *tgbotapi.Message) {
@@ -271,4 +304,18 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func redactToken(value, token string) string {
+	if token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, token, "<redacted>")
 }

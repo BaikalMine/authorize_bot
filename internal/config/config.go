@@ -8,20 +8,26 @@ import (
 )
 
 type Config struct {
-	BotToken       string
-	CaptchaTimeout time.Duration
-	PollingTimeout int
-	KickOnTimeout  bool
-	LogLevel       string
+	BotToken            string
+	TelegramAPIEndpoint string
+	CaptchaTimeout      time.Duration
+	PollingTimeout      int
+	StartupRetries      int
+	StartupRetryDelay   time.Duration
+	KickOnTimeout       bool
+	LogLevel            string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		BotToken:       os.Getenv("BOT_TOKEN"),
-		CaptchaTimeout: 120 * time.Second,
-		PollingTimeout: 60,
-		KickOnTimeout:  true,
-		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
+		BotToken:            os.Getenv("BOT_TOKEN"),
+		TelegramAPIEndpoint: os.Getenv("TELEGRAM_API_ENDPOINT"),
+		CaptchaTimeout:      120 * time.Second,
+		PollingTimeout:      60,
+		StartupRetries:      10,
+		StartupRetryDelay:   10 * time.Second,
+		KickOnTimeout:       true,
+		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
 	}
 
 	if cfg.BotToken == "" {
@@ -42,6 +48,22 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.PollingTimeout = timeout
+	}
+
+	if raw := os.Getenv("STARTUP_RETRIES"); raw != "" {
+		retries, err := strconv.Atoi(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.StartupRetries = retries
+	}
+
+	if raw := os.Getenv("STARTUP_RETRY_DELAY"); raw != "" {
+		delay, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.StartupRetryDelay = delay
 	}
 
 	if raw := os.Getenv("KICK_ON_TIMEOUT"); raw != "" {
