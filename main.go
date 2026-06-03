@@ -92,10 +92,13 @@ func newBot(cfg config.Config) (*tgbotapi.BotAPI, error) {
 func telegramHTTPClient(cfg config.Config) *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   cfg.TelegramConnectTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   cfg.TelegramConnectTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, cfg.TelegramIPFamily, address)
+		},
 		TLSHandshakeTimeout:   cfg.TelegramConnectTimeout,
 		ResponseHeaderTimeout: cfg.TelegramRequestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -119,7 +122,7 @@ func logTelegramNetworkDiagnostics(cfg config.Config) {
 		return
 	}
 
-	log.Printf("telegram network diagnostics: endpoint_host=%s endpoint_port=%s proxy_env=%s", host, port, proxyEnvSummary())
+	log.Printf("telegram network diagnostics: endpoint_host=%s endpoint_port=%s ip_family=%s proxy_env=%s", host, port, cfg.TelegramIPFamily, proxyEnvSummary())
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.TelegramConnectTimeout)
 	defer cancel()
@@ -131,7 +134,7 @@ func logTelegramNetworkDiagnostics(cfg config.Config) {
 		log.Printf("telegram network diagnostics: dns addresses=%s", formatIPAddrs(addrs))
 	}
 
-	conn, err := (&net.Dialer{Timeout: cfg.TelegramConnectTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	conn, err := (&net.Dialer{Timeout: cfg.TelegramConnectTimeout}).DialContext(ctx, cfg.TelegramIPFamily, net.JoinHostPort(host, port))
 	if err != nil {
 		log.Printf("telegram network diagnostics: tcp connect failed: %v", err)
 		return

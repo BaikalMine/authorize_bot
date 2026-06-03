@@ -17,6 +17,7 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "token")
 	t.Setenv("STARTUP_RETRIES", "3")
 	t.Setenv("STARTUP_RETRY_DELAY", "2s")
+	t.Setenv("TELEGRAM_IP_FAMILY", "tcp")
 	t.Setenv("TELEGRAM_CONNECT_TIMEOUT", "4s")
 	t.Setenv("TELEGRAM_REQUEST_TIMEOUT", "70s")
 	t.Setenv("TELEGRAM_API_ENDPOINT", "http://localhost:8081/bot%s/%s")
@@ -42,7 +43,19 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	if cfg.TelegramAPIEndpoint != "http://localhost:8081/bot%s/%s" {
 		t.Fatalf("unexpected TelegramAPIEndpoint: %s", cfg.TelegramAPIEndpoint)
 	}
+	if cfg.TelegramIPFamily != "tcp" {
+		t.Fatalf("unexpected TelegramIPFamily: %s", cfg.TelegramIPFamily)
+	}
 	if cfg.NetworkDiagnostics {
 		t.Fatal("expected NetworkDiagnostics to be false")
+	}
+}
+
+func TestLoadRejectsInvalidTelegramIPFamily(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_IP_FAMILY", "udp")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid TELEGRAM_IP_FAMILY error")
 	}
 }

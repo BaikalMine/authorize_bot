@@ -10,6 +10,7 @@ import (
 type Config struct {
 	BotToken               string
 	TelegramAPIEndpoint    string
+	TelegramIPFamily       string
 	TelegramConnectTimeout time.Duration
 	TelegramRequestTimeout time.Duration
 	CaptchaTimeout         time.Duration
@@ -25,6 +26,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		BotToken:               os.Getenv("BOT_TOKEN"),
 		TelegramAPIEndpoint:    os.Getenv("TELEGRAM_API_ENDPOINT"),
+		TelegramIPFamily:       envOrDefault("TELEGRAM_IP_FAMILY", "tcp4"),
 		TelegramConnectTimeout: 10 * time.Second,
 		CaptchaTimeout:         120 * time.Second,
 		PollingTimeout:         60,
@@ -37,6 +39,9 @@ func Load() (Config, error) {
 
 	if cfg.BotToken == "" {
 		return Config{}, errors.New("BOT_TOKEN is required")
+	}
+	if cfg.TelegramIPFamily != "tcp" && cfg.TelegramIPFamily != "tcp4" && cfg.TelegramIPFamily != "tcp6" {
+		return Config{}, errors.New("TELEGRAM_IP_FAMILY must be tcp, tcp4, or tcp6")
 	}
 
 	if raw := os.Getenv("CAPTCHA_TIMEOUT"); raw != "" {
