@@ -19,7 +19,7 @@
    - Ban users / блокировка пользователей
    - Delete messages / удаление сообщений
    - Restrict members / ограничение участников
-4. Отключите privacy mode у бота через BotFather, если бот не видит служебные сообщения группы.
+4. Отключите privacy mode у бота через BotFather. Это обязательно для post-captcha probation, иначе бот не увидит обычные сообщения новых участников и не сможет удалить отложенный спам.
 5. Создайте файл `.env` рядом с `docker-compose.yml`:
 
 ```powershell
@@ -64,6 +64,15 @@ go run .
 | `TELEGRAM_CONNECT_TIMEOUT` | `10s` | Таймаут TCP/TLS подключения к Telegram |
 | `TELEGRAM_REQUEST_TIMEOUT` | `POLLING_TIMEOUT + 30s` | Общий таймаут HTTP-запроса к Telegram |
 | `CAPTCHA_TIMEOUT` | `120s` | Время на прохождение капчи |
+| `CAPTCHA_MAX_ATTEMPTS` | `3` | Максимум неверных ответов до удаления проверки |
+| `MAX_ACTIVE_CHALLENGES` | `1000` | Общий лимит активных капч в памяти |
+| `MAX_ACTIVE_CHALLENGES_PER_CHAT` | `200` | Лимит активных капч на один чат |
+| `CLEANUP_BATCH_SIZE` | `100` | Максимум истекших капч, обрабатываемых за один cleanup tick |
+| `PROBATION_ENABLED` | `true` | Включить испытательный период после успешной капчи |
+| `PROBATION_DURATION` | `24h` | Длительность проверки новых участников после капчи |
+| `PROBATION_BLOCK_LINKS` | `true` | Удалять/кикать probation-пользователя за ссылки |
+| `PROBATION_BLOCK_FORWARDS` | `true` | Удалять/кикать probation-пользователя за пересланные сообщения |
+| `PROBATION_BLOCK_MEDIA` | `true` | Удалять/кикать probation-пользователя за медиа |
 | `POLLING_TIMEOUT` | `60` | Таймаут long polling в секундах |
 | `STARTUP_RETRIES` | `10` | Количество повторов подключения к Telegram при старте |
 | `STARTUP_RETRY_DELAY` | `10s` | Пауза между повторами подключения |

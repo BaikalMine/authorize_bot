@@ -16,9 +16,15 @@ import (
 
 	"autorize-bot-tg/internal/captcha"
 	"autorize-bot-tg/internal/config"
+	"autorize-bot-tg/internal/probation"
 )
 
 const callbackPrefix = "captcha"
+
+type telegramClient interface {
+	Request(tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
+	Send(tgbotapi.Chattable) (tgbotapi.Message, error)
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -33,8 +39,12 @@ func main() {
 
 	log.Printf("authorized as @%s", bot.Self.UserName)
 
-	store := captcha.NewStore()
-	go cleanupExpired(bot, store, cfg)
+	store := captcha.NewStore(captcha.Limits{
+		MaxActive:        cfg.MaxActiveChallenges,
+		MaxActivePerChat: cfg.MaxActiveChallengesPerChat,
+	})
+	probationStore := probation.NewStore()
+	go cleanupExpired(bot, store, probationStore, cfg)
 
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = cfg.PollingTimeout
@@ -42,11 +52,11 @@ func main() {
 
 	for update := range updates {
 		if update.Message != nil {
-			handleMessage(bot, store, cfg, update.Message)
+			handleMessage(bot, bot.Self.ID, store, probationStore, cfg, update.Message)
 			continue
 		}
 		if update.CallbackQuery != nil {
-			handleCallback(bot, store, update.CallbackQuery)
+			handleCallback(bot, store, probationStore, cfg, update.CallbackQuery)
 		}
 	}
 }
@@ -183,36 +193,54 @@ func formatIPAddrs(addrs []net.IPAddr) string {
 	return strings.Join(values, ",")
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Config, message *tgbotapi.Message) {
+func handleMessage(bot telegramClient, botID int64, store *captcha.Store, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
 	if len(message.NewChatMembers) == 0 {
+		handleProbationMessage(bot, probationStore, cfg, message)
 		return
 	}
 
 	for _, user := range message.NewChatMembers {
-		if user.ID == bot.Self.ID || user.IsBot {
+		if user.ID == botID || user.IsBot {
 			continue
 		}
 
 		if err := restrictUser(bot, message.Chat.ID, user.ID); err != nil {
-			log.Printf("restrict user %d in chat %d: %v", user.ID, message.Chat.ID, err)
+			log.Printf("restrict user %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick unrestricted user %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
+			continue
 		}
 
 		challenge, err := store.Create(message.Chat.ID, user.ID, cfg.CaptchaTimeout)
 		if err != nil {
 			log.Printf("create captcha for user %d: %v", user.ID, err)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick user without captcha %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
 			continue
 		}
 
 		sent, err := bot.Send(captchaMessage(message.Chat.ID, user, challenge, cfg.CaptchaTimeout))
 		if err != nil {
-			log.Printf("send captcha to user %d: %v", user.ID, err)
+			log.Printf("send captcha to user %d: %s", user.ID, safeTelegramError(err, cfg.BotToken))
+			store.Delete(message.Chat.ID, user.ID)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, message.Chat.ID, user.ID); err != nil {
+					log.Printf("kick user without captcha message %d in chat %d: %s", user.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
 			continue
 		}
 		store.SetMessageID(message.Chat.ID, user.ID, sent.MessageID)
 	}
 }
 
-func handleCallback(bot *tgbotapi.BotAPI, store *captcha.Store, query *tgbotapi.CallbackQuery) {
+func handleCallback(bot telegramClient, store *captcha.Store, probationStore *probation.Store, cfg config.Config, query *tgbotapi.CallbackQuery) {
 	chatID, userID, answer, ok := parseCallback(query.Data)
 	if !ok {
 		return
@@ -223,21 +251,51 @@ func handleCallback(bot *tgbotapi.BotAPI, store *captcha.Store, query *tgbotapi.
 		return
 	}
 
-	challenge, ok := store.Get(chatID, userID)
+	challenge, ok, expired := store.GetValid(chatID, userID, time.Now())
 	if !ok {
 		answerCallback(bot, query.ID, "Проверка уже истекла.")
+		if expired && cfg.KickOnTimeout {
+			if err := kickUser(bot, chatID, userID); err != nil {
+				log.Printf("kick expired callback user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+			}
+		}
 		return
 	}
 
 	if answer != challenge.Answer {
+		remaining, locked := store.RecordFailedAttempt(chatID, userID, cfg.CaptchaMaxAttempts)
+		if locked {
+			answerCallback(bot, query.ID, "Слишком много неверных ответов.")
+			edit := tgbotapi.NewEditMessageText(chatID, challenge.MessageID, "Проверка не пройдена.")
+			_, _ = bot.Send(edit)
+			if cfg.KickOnTimeout {
+				if err := kickUser(bot, chatID, userID); err != nil {
+					log.Printf("kick failed captcha user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
+			return
+		}
+		if remaining > 0 {
+			answerCallback(bot, query.ID, fmt.Sprintf("Неверно. Осталось попыток: %d.", remaining))
+			return
+		}
 		answerCallback(bot, query.ID, "Неверно. Попробуйте еще раз.")
 		return
 	}
 
-	if err := unrestrictUser(bot, chatID, userID); err != nil {
-		log.Printf("unrestrict user %d in chat %d: %v", userID, chatID, err)
-		answerCallback(bot, query.ID, "Ответ верный, но бот не смог вернуть права. Проверьте права администратора.")
-		return
+	if cfg.ProbationEnabled {
+		if err := restrictUserForProbation(bot, chatID, userID, cfg.ProbationDuration); err != nil {
+			log.Printf("probation restrict user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+			answerCallback(bot, query.ID, "Ответ верный, но бот не смог включить проверочный режим. Проверьте права администратора.")
+			return
+		}
+		probationStore.Add(chatID, userID, cfg.ProbationDuration, time.Now())
+	} else {
+		if err := unrestrictUser(bot, chatID, userID); err != nil {
+			log.Printf("unrestrict user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
+			answerCallback(bot, query.ID, "Ответ верный, но бот не смог вернуть права. Проверьте права администратора.")
+			return
+		}
 	}
 
 	store.Delete(chatID, userID)
@@ -248,21 +306,48 @@ func handleCallback(bot *tgbotapi.BotAPI, store *captcha.Store, query *tgbotapi.
 	_, _ = bot.Send(edit)
 }
 
-func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, cfg config.Config) {
+func handleProbationMessage(bot telegramClient, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
+	if !cfg.ProbationEnabled || message.Chat == nil || message.From == nil || message.From.IsBot {
+		return
+	}
+	if !probationStore.Active(message.Chat.ID, int64(message.From.ID), time.Now()) {
+		return
+	}
+	if !isProbationSpam(message, cfg) {
+		return
+	}
+
+	if err := deleteMessage(bot, message.Chat.ID, message.MessageID); err != nil {
+		log.Printf("delete probation spam message %d in chat %d: %s", message.MessageID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+	}
+	if cfg.KickOnTimeout {
+		if err := kickUser(bot, message.Chat.ID, int64(message.From.ID)); err != nil {
+			log.Printf("kick probation spam user %d in chat %d: %s", message.From.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+		}
+	}
+	probationStore.Delete(message.Chat.ID, int64(message.From.ID))
+}
+
+func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, probationStore *probation.Store, cfg config.Config) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		for _, challenge := range store.Expired(time.Now()) {
+		for _, challenge := range store.Expired(time.Now(), cfg.CleanupBatchSize) {
 			if cfg.KickOnTimeout {
 				if err := kickUser(bot, challenge.ChatID, challenge.UserID); err != nil {
-					log.Printf("kick expired user %d in chat %d: %v", challenge.UserID, challenge.ChatID, err)
+					log.Printf("kick expired user %d in chat %d: %s", challenge.UserID, challenge.ChatID, safeTelegramError(err, cfg.BotToken))
 				}
 			}
 			if challenge.MessageID != 0 {
 				text := "Время на прохождение капчи истекло."
 				edit := tgbotapi.NewEditMessageText(challenge.ChatID, challenge.MessageID, text)
 				_, _ = bot.Send(edit)
+			}
+		}
+		for _, entry := range probationStore.Expired(time.Now(), cfg.CleanupBatchSize) {
+			if err := unrestrictUser(bot, entry.ChatID, entry.UserID); err != nil {
+				log.Printf("unrestrict probation user %d in chat %d: %s", entry.UserID, entry.ChatID, safeTelegramError(err, cfg.BotToken))
 			}
 		}
 	}
@@ -292,7 +377,7 @@ func captchaMessage(chatID int64, user tgbotapi.User, challenge captcha.Challeng
 	return msg
 }
 
-func restrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func restrictUser(bot telegramClient, chatID int64, userID int64) error {
 	cfg := tgbotapi.RestrictChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -314,7 +399,7 @@ func restrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
 	return err
 }
 
-func unrestrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func unrestrictUser(bot telegramClient, chatID int64, userID int64) error {
 	cfg := tgbotapi.RestrictChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -335,7 +420,29 @@ func unrestrictUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
 	return err
 }
 
-func kickUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
+func restrictUserForProbation(bot telegramClient, chatID int64, userID int64, duration time.Duration) error {
+	cfg := tgbotapi.RestrictChatMemberConfig{
+		ChatMemberConfig: tgbotapi.ChatMemberConfig{
+			ChatID: chatID,
+			UserID: userID,
+		},
+		UntilDate: time.Now().Add(duration).Unix(),
+		Permissions: &tgbotapi.ChatPermissions{
+			CanSendMessages:       true,
+			CanSendMediaMessages:  false,
+			CanSendPolls:          false,
+			CanSendOtherMessages:  false,
+			CanAddWebPagePreviews: false,
+			CanChangeInfo:         false,
+			CanInviteUsers:        false,
+			CanPinMessages:        false,
+		},
+	}
+	_, err := bot.Request(cfg)
+	return err
+}
+
+func kickUser(bot telegramClient, chatID int64, userID int64) error {
 	ban := tgbotapi.BanChatMemberConfig{
 		ChatMemberConfig: tgbotapi.ChatMemberConfig{
 			ChatID: chatID,
@@ -356,6 +463,69 @@ func kickUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) error {
 	}
 	_, err := bot.Request(unban)
 	return err
+}
+
+func deleteMessage(bot telegramClient, chatID int64, messageID int) error {
+	cfg := tgbotapi.NewDeleteMessage(chatID, messageID)
+	_, err := bot.Request(cfg)
+	return err
+}
+
+func isProbationSpam(message *tgbotapi.Message, cfg config.Config) bool {
+	if cfg.ProbationBlockLinks && messageHasLink(message) {
+		return true
+	}
+	if cfg.ProbationBlockForwards && messageIsForward(message) {
+		return true
+	}
+	if cfg.ProbationBlockMedia && messageHasMedia(message) {
+		return true
+	}
+	return false
+}
+
+func messageHasLink(message *tgbotapi.Message) bool {
+	for _, entity := range append(message.Entities, message.CaptionEntities...) {
+		if entity.Type == "url" || entity.Type == "text_link" {
+			return true
+		}
+	}
+
+	text := strings.ToLower(message.Text + " " + message.Caption)
+	linkMarkers := []string{"http://", "https://", "www.", "t.me/", "telegram.me/", "bit.ly/", "tinyurl.com/"}
+	for _, marker := range linkMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageIsForward(message *tgbotapi.Message) bool {
+	return message.ForwardFrom != nil ||
+		message.ForwardFromChat != nil ||
+		message.ForwardFromMessageID != 0 ||
+		message.ForwardSignature != "" ||
+		message.ForwardSenderName != "" ||
+		message.ForwardDate != 0 ||
+		message.IsAutomaticForward
+}
+
+func messageHasMedia(message *tgbotapi.Message) bool {
+	return message.Animation != nil ||
+		message.Audio != nil ||
+		message.Document != nil ||
+		len(message.Photo) > 0 ||
+		message.Sticker != nil ||
+		message.Video != nil ||
+		message.VideoNote != nil ||
+		message.Voice != nil ||
+		message.Contact != nil ||
+		message.Game != nil ||
+		message.Poll != nil ||
+		message.Venue != nil ||
+		message.Location != nil ||
+		message.Dice != nil
 }
 
 func parseCallback(data string) (chatID int64, userID int64, answer int, ok bool) {
@@ -379,7 +549,7 @@ func parseCallback(data string) (chatID int64, userID int64, answer int, ok bool
 	return parsedChatID, parsedUserID, parsedAnswer, true
 }
 
-func answerCallback(bot *tgbotapi.BotAPI, queryID, text string) {
+func answerCallback(bot telegramClient, queryID, text string) {
 	callback := tgbotapi.NewCallback(queryID, text)
 	_, _ = bot.Request(callback)
 }
@@ -422,4 +592,11 @@ func redactToken(value, token string) string {
 		return value
 	}
 	return strings.ReplaceAll(value, token, "<redacted>")
+}
+
+func safeTelegramError(err error, token string) string {
+	if err == nil {
+		return ""
+	}
+	return redactToken(err.Error(), token)
 }
