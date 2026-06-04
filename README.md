@@ -60,7 +60,7 @@ go run .
 | --- | --- | --- |
 | `BOT_TOKEN` | обязательна | Токен Telegram-бота |
 | `TELEGRAM_API_ENDPOINT` | официальный API | Кастомный Bot API endpoint, формат `https://host/bot%s/%s` |
-| `TELEGRAM_IP_FAMILY` | `tcp4` | IP-семейство для Telegram: `tcp4`, `tcp6` или `tcp` |
+| `TELEGRAM_IP_FAMILY` | `tcp6` | IP-семейство для Telegram: `tcp6`, `tcp4` или `tcp` |
 | `TELEGRAM_CONNECT_TIMEOUT` | `10s` | Таймаут TCP/TLS подключения к Telegram |
 | `TELEGRAM_REQUEST_TIMEOUT` | `POLLING_TIMEOUT + 30s` | Общий таймаут HTTP-запроса к Telegram |
 | `CAPTCHA_TIMEOUT` | `120s` | Время на прохождение капчи |
@@ -88,10 +88,10 @@ go run .
 docker run --rm alpine:3.22 wget -T 10 -S -O- https://api.telegram.org
 ```
 
-Если в логах видно IPv6-адрес вида `[2001:...]`, а затем `i/o timeout`, значит сервер получает IPv6 DNS-запись Telegram, но IPv6-маршрут не работает. По умолчанию бот использует IPv4:
+Если в логах видно `dial tcp4 ... i/o timeout`, значит IPv4-маршрут до Telegram не работает. По умолчанию бот использует IPv6:
 
 ```dotenv
-TELEGRAM_IP_FAMILY=tcp4
+TELEGRAM_IP_FAMILY=tcp6
 ```
 
 Если Telegram недоступен из вашей сети, можно передать прокси через переменные окружения в `.env`:

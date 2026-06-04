@@ -38,7 +38,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		BotToken:                   os.Getenv("BOT_TOKEN"),
 		TelegramAPIEndpoint:        os.Getenv("TELEGRAM_API_ENDPOINT"),
-		TelegramIPFamily:           envOrDefault("TELEGRAM_IP_FAMILY", "tcp4"),
+		TelegramIPFamily:           envOrDefault("TELEGRAM_IP_FAMILY", "tcp6"),
 		TelegramConnectTimeout:     10 * time.Second,
 		CaptchaTimeout:             120 * time.Second,
 		CaptchaMaxAttempts:         3,
