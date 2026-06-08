@@ -198,6 +198,9 @@ func handleMessage(bot telegramClient, botID int64, store *captcha.Store, probat
 		handleProbationMessage(bot, probationStore, cfg, message)
 		return
 	}
+	if message.Chat == nil {
+		return
+	}
 
 	for _, user := range message.NewChatMembers {
 		if user.ID == botID || user.IsBot {
@@ -238,6 +241,12 @@ func handleMessage(bot telegramClient, botID int64, store *captcha.Store, probat
 		}
 		store.SetMessageID(message.Chat.ID, user.ID, sent.MessageID)
 	}
+
+	if message.MessageID != 0 {
+		if err := deleteMessage(bot, message.Chat.ID, message.MessageID); err != nil {
+			log.Printf("delete join service message %d in chat %d: %s", message.MessageID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+		}
+	}
 }
 
 func handleCallback(bot telegramClient, store *captcha.Store, probationStore *probation.Store, cfg config.Config, query *tgbotapi.CallbackQuery) {
@@ -266,8 +275,11 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 		remaining, locked := store.RecordFailedAttempt(chatID, userID, cfg.CaptchaMaxAttempts)
 		if locked {
 			answerCallback(bot, query.ID, "Слишком много неверных ответов.")
-			edit := tgbotapi.NewEditMessageText(chatID, challenge.MessageID, "Проверка не пройдена.")
-			_, _ = bot.Send(edit)
+			if challenge.MessageID != 0 {
+				if err := deleteMessage(bot, chatID, challenge.MessageID); err != nil {
+					log.Printf("delete failed captcha message %d in chat %d: %s", challenge.MessageID, chatID, safeTelegramError(err, cfg.BotToken))
+				}
+			}
 			if cfg.KickOnTimeout {
 				if err := kickUser(bot, chatID, userID); err != nil {
 					log.Printf("kick failed captcha user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
@@ -300,10 +312,11 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 
 	store.Delete(chatID, userID)
 	answerCallback(bot, query.ID, "Готово, добро пожаловать!")
-
-	edit := tgbotapi.NewEditMessageText(chatID, challenge.MessageID, fmt.Sprintf("%s прошел проверку.", userMention(query.From)))
-	edit.ParseMode = tgbotapi.ModeHTML
-	_, _ = bot.Send(edit)
+	if challenge.MessageID != 0 {
+		if err := deleteMessage(bot, chatID, challenge.MessageID); err != nil {
+			log.Printf("delete passed captcha message %d in chat %d: %s", challenge.MessageID, chatID, safeTelegramError(err, cfg.BotToken))
+		}
+	}
 }
 
 func handleProbationMessage(bot telegramClient, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
@@ -340,9 +353,9 @@ func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, probationStore *
 				}
 			}
 			if challenge.MessageID != 0 {
-				text := "Время на прохождение капчи истекло."
-				edit := tgbotapi.NewEditMessageText(challenge.ChatID, challenge.MessageID, text)
-				_, _ = bot.Send(edit)
+				if err := deleteMessage(bot, challenge.ChatID, challenge.MessageID); err != nil {
+					log.Printf("delete expired captcha message %d in chat %d: %s", challenge.MessageID, challenge.ChatID, safeTelegramError(err, cfg.BotToken))
+				}
 			}
 		}
 		for _, entry := range probationStore.Expired(time.Now(), cfg.CleanupBatchSize) {
@@ -555,12 +568,13 @@ func answerCallback(bot telegramClient, queryID, text string) {
 }
 
 func userMention(user *tgbotapi.User) string {
-	if user.UserName != "" {
-		return "@" + user.UserName
-	}
 	name := strings.TrimSpace(user.FirstName + " " + user.LastName)
 	if name == "" {
-		name = "Пользователь"
+		if user.UserName != "" {
+			name = user.UserName
+		} else {
+			name = "Пользователь"
+		}
 	}
 	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, user.ID, htmlEscape(name))
 }

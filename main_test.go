@@ -45,6 +45,23 @@ func TestSafeTelegramErrorRedactsToken(t *testing.T) {
 	}
 }
 
+func TestUserMentionPrefersDisplayNameOverUsername(t *testing.T) {
+	user := &tgbotapi.User{
+		ID:        42,
+		UserName:  "telegram_username",
+		FirstName: "Display",
+		LastName:  "Name",
+	}
+
+	got := userMention(user)
+	if strings.Contains(got, "@telegram_username") {
+		t.Fatalf("expected display name instead of username, got %q", got)
+	}
+	if !strings.Contains(got, "Display Name") {
+		t.Fatalf("expected display name, got %q", got)
+	}
+}
+
 func TestHandleMessageSkipsCaptchaWhenRestrictFails(t *testing.T) {
 	bot := &fakeTelegramClient{requestErr: errors.New("restrict failed")}
 	store := captcha.NewStore(captcha.Limits{})
