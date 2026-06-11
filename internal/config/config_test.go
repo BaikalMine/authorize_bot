@@ -30,6 +30,8 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	t.Setenv("PROBATION_BLOCK_LINKS", "true")
 	t.Setenv("PROBATION_BLOCK_FORWARDS", "false")
 	t.Setenv("PROBATION_BLOCK_MEDIA", "false")
+	t.Setenv("SPAM_GUARD_ENABLED", "true")
+	t.Setenv("SPAM_GUARD_KICK", "false")
 	t.Setenv("NETWORK_DIAGNOSTICS", "false")
 
 	cfg, err := Load()
@@ -81,6 +83,12 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	}
 	if cfg.ProbationBlockMedia {
 		t.Fatal("expected ProbationBlockMedia to be false")
+	}
+	if !cfg.SpamGuardEnabled {
+		t.Fatal("expected SpamGuardEnabled to be true")
+	}
+	if cfg.SpamGuardKick {
+		t.Fatal("expected SpamGuardKick to be false")
 	}
 	if cfg.NetworkDiagnostics {
 		t.Fatal("expected NetworkDiagnostics to be false")

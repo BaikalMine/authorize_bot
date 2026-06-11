@@ -195,7 +195,10 @@ func formatIPAddrs(addrs []net.IPAddr) string {
 
 func handleMessage(bot telegramClient, botID int64, store *captcha.Store, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
 	if len(message.NewChatMembers) == 0 {
-		handleProbationMessage(bot, probationStore, cfg, message)
+		if handleProbationMessage(bot, probationStore, cfg, message) {
+			return
+		}
+		handleGlobalSpamMessage(bot, cfg, message)
 		return
 	}
 	if message.Chat == nil {
@@ -319,15 +322,15 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 	}
 }
 
-func handleProbationMessage(bot telegramClient, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
+func handleProbationMessage(bot telegramClient, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) bool {
 	if !cfg.ProbationEnabled || message.Chat == nil || message.From == nil || message.From.IsBot {
-		return
+		return false
 	}
 	if !probationStore.Active(message.Chat.ID, int64(message.From.ID), time.Now()) {
-		return
+		return false
 	}
 	if !isProbationSpam(message, cfg) {
-		return
+		return false
 	}
 
 	if err := deleteMessage(bot, message.Chat.ID, message.MessageID); err != nil {
@@ -339,6 +342,26 @@ func handleProbationMessage(bot telegramClient, probationStore *probation.Store,
 		}
 	}
 	probationStore.Delete(message.Chat.ID, int64(message.From.ID))
+	return true
+}
+
+func handleGlobalSpamMessage(bot telegramClient, cfg config.Config, message *tgbotapi.Message) bool {
+	if !cfg.SpamGuardEnabled || message.Chat == nil || message.From == nil || message.From.IsBot {
+		return false
+	}
+	if !isKnownSpamMessage(message) {
+		return false
+	}
+
+	if err := deleteMessage(bot, message.Chat.ID, message.MessageID); err != nil {
+		log.Printf("delete global spam message %d in chat %d: %s", message.MessageID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+	}
+	if cfg.SpamGuardKick {
+		if err := kickUser(bot, message.Chat.ID, int64(message.From.ID)); err != nil {
+			log.Printf("kick global spam user %d in chat %d: %s", message.From.ID, message.Chat.ID, safeTelegramError(err, cfg.BotToken))
+		}
+	}
+	return true
 }
 
 func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, probationStore *probation.Store, cfg config.Config) {
@@ -512,6 +535,40 @@ func messageHasLink(message *tgbotapi.Message) bool {
 		}
 	}
 	return false
+}
+
+func isKnownSpamMessage(message *tgbotapi.Message) bool {
+	if !messageHasLink(message) {
+		return false
+	}
+
+	text := spamText(message)
+	markers := []string{
+		"удален", "удалён", "удалёнка", "удаленка",
+		"от 18", "в неделю", "пишите", "₽", "руб",
+		"заработ", "подработ", "доход", "выплат",
+	}
+
+	score := 0
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			score++
+		}
+	}
+	if strings.Contains(text, "t.me/m/") && score >= 1 {
+		return true
+	}
+	return score >= 2
+}
+
+func spamText(message *tgbotapi.Message) string {
+	parts := []string{message.Text, message.Caption}
+	for _, entity := range append(message.Entities, message.CaptionEntities...) {
+		if entity.URL != "" {
+			parts = append(parts, entity.URL)
+		}
+	}
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 func messageIsForward(message *tgbotapi.Message) bool {

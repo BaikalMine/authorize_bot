@@ -73,6 +73,8 @@ go run .
 | `PROBATION_BLOCK_LINKS` | `true` | Удалять/кикать probation-пользователя за ссылки |
 | `PROBATION_BLOCK_FORWARDS` | `true` | Удалять/кикать probation-пользователя за пересланные сообщения |
 | `PROBATION_BLOCK_MEDIA` | `true` | Удалять/кикать probation-пользователя за медиа |
+| `SPAM_GUARD_ENABLED` | `true` | Удалять явный job-spam/удаленка-спам даже вне probation |
+| `SPAM_GUARD_KICK` | `true` | Кикать автора сообщения, пойманного глобальным spam-guard |
 | `POLLING_TIMEOUT` | `60` | Таймаут long polling в секундах |
 | `STARTUP_RETRIES` | `10` | Количество повторов подключения к Telegram при старте |
 | `STARTUP_RETRY_DELAY` | `10s` | Пауза между повторами подключения |

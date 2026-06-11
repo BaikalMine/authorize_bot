@@ -26,6 +26,8 @@ type Config struct {
 	ProbationBlockLinks        bool
 	ProbationBlockForwards     bool
 	ProbationBlockMedia        bool
+	SpamGuardEnabled           bool
+	SpamGuardKick              bool
 	PollingTimeout             int
 	StartupRetries             int
 	StartupRetryDelay          time.Duration
@@ -50,6 +52,8 @@ func Load() (Config, error) {
 		ProbationBlockLinks:        true,
 		ProbationBlockForwards:     true,
 		ProbationBlockMedia:        true,
+		SpamGuardEnabled:           true,
+		SpamGuardKick:              true,
 		PollingTimeout:             60,
 		StartupRetries:             10,
 		StartupRetryDelay:          10 * time.Second,
@@ -223,6 +227,22 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.ProbationBlockMedia = value
+	}
+
+	if raw := os.Getenv("SPAM_GUARD_ENABLED"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.SpamGuardEnabled = value
+	}
+
+	if raw := os.Getenv("SPAM_GUARD_KICK"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.SpamGuardKick = value
 	}
 
 	if raw := os.Getenv("NETWORK_DIAGNOSTICS"); raw != "" {

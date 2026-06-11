@@ -128,6 +128,49 @@ func TestIsProbationSpamAllowsPlainText(t *testing.T) {
 	}
 }
 
+func TestIsKnownSpamMessageDetectsRemoteJobSpamWithTextLink(t *testing.T) {
+	message := &tgbotapi.Message{
+		Text: "УДАЛЁНКА с 📲\nот 18 лет\nВ неделю от 𝟒𝟎𝟎𝟎𝟎 ₽\nПишите ⤵️\nАнна",
+		Entities: []tgbotapi.MessageEntity{
+			{Type: "text_link", URL: "https://t.me/m/HIIm_goyNjM6"},
+		},
+	}
+
+	if !isKnownSpamMessage(message) {
+		t.Fatal("expected remote job spam to be detected")
+	}
+}
+
+func TestIsKnownSpamMessageAllowsPlainLink(t *testing.T) {
+	message := &tgbotapi.Message{Text: "docs https://example.com"}
+
+	if isKnownSpamMessage(message) {
+		t.Fatal("expected plain link without spam markers to be allowed")
+	}
+}
+
+func TestHandleGlobalSpamMessageDeletesAndKicks(t *testing.T) {
+	bot := &fakeTelegramClient{}
+	cfg := config.Config{
+		BotToken:         "token",
+		SpamGuardEnabled: true,
+		SpamGuardKick:    true,
+	}
+	message := &tgbotapi.Message{
+		MessageID: 11,
+		Chat:      &tgbotapi.Chat{ID: -100},
+		From:      &tgbotapi.User{ID: 42, FirstName: "Spam"},
+		Text:      "УДАЛЁНКА от 18 лет, пишите https://t.me/m/HIIm_goyNjM6",
+	}
+
+	if !handleGlobalSpamMessage(bot, cfg, message) {
+		t.Fatal("expected global spam handler to act")
+	}
+	if bot.requestCalls < 3 {
+		t.Fatalf("expected delete, ban, and unban requests, got %d", bot.requestCalls)
+	}
+}
+
 func TestHandleProbationMessageDeletesAndKicksSpam(t *testing.T) {
 	bot := &fakeTelegramClient{}
 	probationStore := probation.NewStore()
