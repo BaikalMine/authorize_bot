@@ -62,6 +62,20 @@ func TestUserMentionPrefersDisplayNameOverUsername(t *testing.T) {
 	}
 }
 
+func TestTelegramNetworksFallbackOrder(t *testing.T) {
+	got := telegramNetworks(config.Config{TelegramIPFamily: "tcp6", TelegramIPFallback: true})
+	want := []string{"tcp6", "tcp4"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected tcp6 fallback order: got %v want %v", got, want)
+	}
+
+	got = telegramNetworks(config.Config{TelegramIPFamily: "tcp4", TelegramIPFallback: true})
+	want = []string{"tcp4", "tcp6"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected tcp4 fallback order: got %v want %v", got, want)
+	}
+}
+
 func TestHandleMessageSkipsCaptchaWhenRestrictFails(t *testing.T) {
 	bot := &fakeTelegramClient{requestErr: errors.New("restrict failed")}
 	store := captcha.NewStore(captcha.Limits{})
@@ -138,6 +152,29 @@ func TestIsKnownSpamMessageDetectsRemoteJobSpamWithTextLink(t *testing.T) {
 
 	if !isKnownSpamMessage(message) {
 		t.Fatal("expected remote job spam to be detected")
+	}
+}
+
+func TestIsKnownSpamMessageDetectsBeelineCodeSpamWithInlineButtons(t *testing.T) {
+	message := &tgbotapi.Message{
+		Text: "Платим по 2.000Р за ваш номер билайна! С вас только 2 кода!",
+		ReplyMarkup: &tgbotapi.InlineKeyboardMarkup{
+			InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
+				{
+					tgbotapi.NewInlineKeyboardButtonURL("🔥 Забрать свои 2000₽", "https://t.me/example"),
+				},
+				{
+					tgbotapi.NewInlineKeyboardButtonURL("📱 Написать менеджеру", "https://t.me/manager"),
+				},
+				{
+					tgbotapi.NewInlineKeyboardButtonURL("⚡ Получить инструкцию", "https://t.me/instruction"),
+				},
+			},
+		},
+	}
+
+	if !isKnownSpamMessage(message) {
+		t.Fatal("expected Beeline code spam with inline buttons to be detected")
 	}
 }
 

@@ -18,6 +18,7 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	t.Setenv("STARTUP_RETRIES", "3")
 	t.Setenv("STARTUP_RETRY_DELAY", "2s")
 	t.Setenv("TELEGRAM_IP_FAMILY", "tcp")
+	t.Setenv("TELEGRAM_IP_FALLBACK", "false")
 	t.Setenv("TELEGRAM_CONNECT_TIMEOUT", "4s")
 	t.Setenv("TELEGRAM_REQUEST_TIMEOUT", "70s")
 	t.Setenv("TELEGRAM_API_ENDPOINT", "http://localhost:8081/bot%s/%s")
@@ -32,6 +33,7 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	t.Setenv("PROBATION_BLOCK_MEDIA", "false")
 	t.Setenv("SPAM_GUARD_ENABLED", "true")
 	t.Setenv("SPAM_GUARD_KICK", "false")
+	t.Setenv("DEBUG_LOG_SUSPICIOUS_MESSAGES", "true")
 	t.Setenv("NETWORK_DIAGNOSTICS", "false")
 
 	cfg, err := Load()
@@ -56,6 +58,9 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	}
 	if cfg.TelegramIPFamily != "tcp" {
 		t.Fatalf("unexpected TelegramIPFamily: %s", cfg.TelegramIPFamily)
+	}
+	if cfg.TelegramIPFallback {
+		t.Fatal("expected TelegramIPFallback to be false")
 	}
 	if cfg.CaptchaMaxAttempts != 2 {
 		t.Fatalf("unexpected CaptchaMaxAttempts: %d", cfg.CaptchaMaxAttempts)
@@ -89,6 +94,9 @@ func TestLoadOptionalStartupSettings(t *testing.T) {
 	}
 	if cfg.SpamGuardKick {
 		t.Fatal("expected SpamGuardKick to be false")
+	}
+	if !cfg.DebugLogSuspiciousMessages {
+		t.Fatal("expected DebugLogSuspiciousMessages to be true")
 	}
 	if cfg.NetworkDiagnostics {
 		t.Fatal("expected NetworkDiagnostics to be false")

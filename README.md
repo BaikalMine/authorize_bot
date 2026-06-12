@@ -61,6 +61,7 @@ go run .
 | `BOT_TOKEN` | обязательна | Токен Telegram-бота |
 | `TELEGRAM_API_ENDPOINT` | официальный API | Кастомный Bot API endpoint, формат `https://host/bot%s/%s` |
 | `TELEGRAM_IP_FAMILY` | `tcp6` | IP-семейство для Telegram: `tcp6`, `tcp4` или `tcp` |
+| `TELEGRAM_IP_FALLBACK` | `true` | При ошибке подключения пробовать второе IP-семейство |
 | `TELEGRAM_CONNECT_TIMEOUT` | `10s` | Таймаут TCP/TLS подключения к Telegram |
 | `TELEGRAM_REQUEST_TIMEOUT` | `POLLING_TIMEOUT + 30s` | Общий таймаут HTTP-запроса к Telegram |
 | `CAPTCHA_TIMEOUT` | `120s` | Время на прохождение капчи |
@@ -75,6 +76,7 @@ go run .
 | `PROBATION_BLOCK_MEDIA` | `true` | Удалять/кикать probation-пользователя за медиа |
 | `SPAM_GUARD_ENABLED` | `true` | Удалять явный job-spam/удаленка-спам даже вне probation |
 | `SPAM_GUARD_KICK` | `true` | Кикать автора сообщения, пойманного глобальным spam-guard |
+| `DEBUG_LOG_SUSPICIOUS_MESSAGES` | `false` | Логировать raw JSON подозрительных сообщений с ссылками/inline-кнопками |
 | `POLLING_TIMEOUT` | `60` | Таймаут long polling в секундах |
 | `STARTUP_RETRIES` | `10` | Количество повторов подключения к Telegram при старте |
 | `STARTUP_RETRY_DELAY` | `10s` | Пауза между повторами подключения |

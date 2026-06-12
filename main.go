@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -103,11 +104,7 @@ func telegramHTTPClient(cfg config.Config) *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			dialer := &net.Dialer{
-				Timeout:   cfg.TelegramConnectTimeout,
-				KeepAlive: 30 * time.Second,
-			}
-			return dialer.DialContext(ctx, cfg.TelegramIPFamily, address)
+			return dialTelegram(ctx, cfg, address)
 		},
 		TLSHandshakeTimeout:   cfg.TelegramConnectTimeout,
 		ResponseHeaderTimeout: cfg.TelegramRequestTimeout,
@@ -118,6 +115,33 @@ func telegramHTTPClient(cfg config.Config) *http.Client {
 		Transport: transport,
 		Timeout:   cfg.TelegramRequestTimeout,
 	}
+}
+
+func dialTelegram(ctx context.Context, cfg config.Config, address string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   cfg.TelegramConnectTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+
+	var lastErr error
+	for _, network := range telegramNetworks(cfg) {
+		conn, err := dialer.DialContext(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func telegramNetworks(cfg config.Config) []string {
+	if !cfg.TelegramIPFallback || cfg.TelegramIPFamily == "tcp" {
+		return []string{cfg.TelegramIPFamily}
+	}
+	if cfg.TelegramIPFamily == "tcp6" {
+		return []string{"tcp6", "tcp4"}
+	}
+	return []string{"tcp4", "tcp6"}
 }
 
 func logTelegramNetworkDiagnostics(cfg config.Config) {
@@ -194,6 +218,8 @@ func formatIPAddrs(addrs []net.IPAddr) string {
 }
 
 func handleMessage(bot telegramClient, botID int64, store *captcha.Store, probationStore *probation.Store, cfg config.Config, message *tgbotapi.Message) {
+	logSuspiciousMessage(cfg, message)
+
 	if len(message.NewChatMembers) == 0 {
 		if handleProbationMessage(bot, probationStore, cfg, message) {
 			return
@@ -526,6 +552,9 @@ func messageHasLink(message *tgbotapi.Message) bool {
 			return true
 		}
 	}
+	if messageHasInlineKeyboardURL(message) {
+		return true
+	}
 
 	text := strings.ToLower(message.Text + " " + message.Caption)
 	linkMarkers := []string{"http://", "https://", "www.", "t.me/", "telegram.me/", "bit.ly/", "tinyurl.com/"}
@@ -547,6 +576,8 @@ func isKnownSpamMessage(message *tgbotapi.Message) bool {
 		"удален", "удалён", "удалёнка", "удаленка",
 		"от 18", "в неделю", "пишите", "₽", "руб",
 		"заработ", "подработ", "доход", "выплат",
+		"платим", "билайн", "номер", "код", "кода",
+		"забрать", "менеджер", "инструкц",
 	}
 
 	score := 0
@@ -568,7 +599,39 @@ func spamText(message *tgbotapi.Message) string {
 			parts = append(parts, entity.URL)
 		}
 	}
+	for _, row := range inlineKeyboardRows(message) {
+		for _, button := range row {
+			parts = append(parts, button.Text)
+			if button.URL != nil {
+				parts = append(parts, *button.URL)
+			}
+			if button.LoginURL != nil {
+				parts = append(parts, button.LoginURL.URL)
+			}
+		}
+	}
 	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func messageHasInlineKeyboardURL(message *tgbotapi.Message) bool {
+	for _, row := range inlineKeyboardRows(message) {
+		for _, button := range row {
+			if button.URL != nil && *button.URL != "" {
+				return true
+			}
+			if button.LoginURL != nil && button.LoginURL.URL != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func inlineKeyboardRows(message *tgbotapi.Message) [][]tgbotapi.InlineKeyboardButton {
+	if message == nil || message.ReplyMarkup == nil {
+		return nil
+	}
+	return message.ReplyMarkup.InlineKeyboard
 }
 
 func messageIsForward(message *tgbotapi.Message) bool {
@@ -596,6 +659,29 @@ func messageHasMedia(message *tgbotapi.Message) bool {
 		message.Venue != nil ||
 		message.Location != nil ||
 		message.Dice != nil
+}
+
+func logSuspiciousMessage(cfg config.Config, message *tgbotapi.Message) {
+	if !cfg.DebugLogSuspiciousMessages || message == nil {
+		return
+	}
+	if !messageHasSuspiciousSurface(message) {
+		return
+	}
+
+	raw, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("debug suspicious message marshal failed: %v", err)
+		return
+	}
+	log.Printf("debug suspicious message raw=%s", string(raw))
+}
+
+func messageHasSuspiciousSurface(message *tgbotapi.Message) bool {
+	return messageHasLink(message) ||
+		message.ReplyMarkup != nil ||
+		messageIsForward(message) ||
+		messageHasMedia(message)
 }
 
 func parseCallback(data string) (chatID int64, userID int64, answer int, ok bool) {

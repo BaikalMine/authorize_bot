@@ -14,6 +14,7 @@ type Config struct {
 	BotToken                   string
 	TelegramAPIEndpoint        string
 	TelegramIPFamily           string
+	TelegramIPFallback         bool
 	TelegramConnectTimeout     time.Duration
 	TelegramRequestTimeout     time.Duration
 	CaptchaTimeout             time.Duration
@@ -28,6 +29,7 @@ type Config struct {
 	ProbationBlockMedia        bool
 	SpamGuardEnabled           bool
 	SpamGuardKick              bool
+	DebugLogSuspiciousMessages bool
 	PollingTimeout             int
 	StartupRetries             int
 	StartupRetryDelay          time.Duration
@@ -41,6 +43,7 @@ func Load() (Config, error) {
 		BotToken:                   os.Getenv("BOT_TOKEN"),
 		TelegramAPIEndpoint:        os.Getenv("TELEGRAM_API_ENDPOINT"),
 		TelegramIPFamily:           envOrDefault("TELEGRAM_IP_FAMILY", "tcp6"),
+		TelegramIPFallback:         true,
 		TelegramConnectTimeout:     10 * time.Second,
 		CaptchaTimeout:             120 * time.Second,
 		CaptchaMaxAttempts:         3,
@@ -54,6 +57,7 @@ func Load() (Config, error) {
 		ProbationBlockMedia:        true,
 		SpamGuardEnabled:           true,
 		SpamGuardKick:              true,
+		DebugLogSuspiciousMessages: false,
 		PollingTimeout:             60,
 		StartupRetries:             10,
 		StartupRetryDelay:          10 * time.Second,
@@ -67,6 +71,14 @@ func Load() (Config, error) {
 	}
 	if cfg.TelegramIPFamily != "tcp" && cfg.TelegramIPFamily != "tcp4" && cfg.TelegramIPFamily != "tcp6" {
 		return Config{}, errors.New("TELEGRAM_IP_FAMILY must be tcp, tcp4, or tcp6")
+	}
+
+	if raw := os.Getenv("TELEGRAM_IP_FALLBACK"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TelegramIPFallback = value
 	}
 	if cfg.TelegramAPIEndpoint != "" {
 		if err := validateTelegramAPIEndpoint(cfg.TelegramAPIEndpoint); err != nil {
@@ -243,6 +255,14 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.SpamGuardKick = value
+	}
+
+	if raw := os.Getenv("DEBUG_LOG_SUSPICIOUS_MESSAGES"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.DebugLogSuspiciousMessages = value
 	}
 
 	if raw := os.Getenv("NETWORK_DIAGNOSTICS"); raw != "" {
