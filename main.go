@@ -47,11 +47,7 @@ func main() {
 	probationStore := probation.NewStore()
 	go cleanupExpired(bot, store, probationStore, cfg)
 
-	updateConfig := tgbotapi.NewUpdate(0)
-	updateConfig.Timeout = cfg.PollingTimeout
-	updates := bot.GetUpdatesChan(updateConfig)
-
-	for update := range updates {
+	for update := range pollUpdates(bot, cfg) {
 		if update.Message != nil {
 			handleMessage(bot, bot.Self.ID, store, probationStore, cfg, update.Message)
 			continue
@@ -60,6 +56,36 @@ func main() {
 			handleCallback(bot, store, probationStore, cfg, update.CallbackQuery)
 		}
 	}
+}
+
+func pollUpdates(bot *tgbotapi.BotAPI, cfg config.Config) <-chan tgbotapi.Update {
+	updates := make(chan tgbotapi.Update, bot.Buffer)
+
+	go func() {
+		defer close(updates)
+
+		updateConfig := tgbotapi.NewUpdate(0)
+		updateConfig.Timeout = cfg.PollingTimeout
+
+		for {
+			batch, err := bot.GetUpdates(updateConfig)
+			if err != nil {
+				log.Printf("get updates failed: %s", safeTelegramError(err, cfg.BotToken))
+				log.Printf("failed to get updates, retrying in 3 seconds")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+
+			for _, update := range batch {
+				if update.UpdateID >= updateConfig.Offset {
+					updateConfig.Offset = update.UpdateID + 1
+					updates <- update
+				}
+			}
+		}
+	}()
+
+	return updates
 }
 
 func newBotWithRetry(cfg config.Config) (*tgbotapi.BotAPI, error) {

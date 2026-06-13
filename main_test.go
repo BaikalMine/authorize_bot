@@ -45,6 +45,19 @@ func TestSafeTelegramErrorRedactsToken(t *testing.T) {
 	}
 }
 
+func TestSafeTelegramErrorRedactsGetUpdatesToken(t *testing.T) {
+	token := "8879482018:SECRET"
+	err := errors.New(`Post "https://api.telegram.org/bot8879482018:SECRET/getUpdates": dial tcp4 149.154.166.110:443: i/o timeout`)
+
+	got := safeTelegramError(err, token)
+	if strings.Contains(got, token) {
+		t.Fatalf("expected getUpdates token to be redacted, got %q", got)
+	}
+	if !strings.Contains(got, "bot<redacted>/getUpdates") {
+		t.Fatalf("expected redacted getUpdates URL, got %q", got)
+	}
+}
+
 func TestUserMentionPrefersDisplayNameOverUsername(t *testing.T) {
 	user := &tgbotapi.User{
 		ID:        42,
