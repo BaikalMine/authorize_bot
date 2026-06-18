@@ -22,6 +22,13 @@ import (
 
 const callbackPrefix = "captcha"
 
+type locale string
+
+const (
+	localeEN locale = "en"
+	localeRU locale = "ru"
+)
+
 type telegramClient interface {
 	Request(tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 	Send(tgbotapi.Chattable) (tgbotapi.Message, error)
@@ -311,13 +318,14 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 	}
 
 	if query.From == nil || int64(query.From.ID) != userID {
-		answerCallback(bot, query.ID, "Это капча другого участника.")
+		answerCallback(bot, query.ID, captchaText(userLocale(query.From)).OtherUser)
 		return
 	}
 
+	texts := captchaText(userLocale(query.From))
 	challenge, ok, expired := store.GetValid(chatID, userID, time.Now())
 	if !ok {
-		answerCallback(bot, query.ID, "Проверка уже истекла.")
+		answerCallback(bot, query.ID, texts.Expired)
 		if expired && cfg.KickOnTimeout {
 			if err := kickUser(bot, chatID, userID); err != nil {
 				log.Printf("kick expired callback user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
@@ -329,7 +337,7 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 	if answer != challenge.Answer {
 		remaining, locked := store.RecordFailedAttempt(chatID, userID, cfg.CaptchaMaxAttempts)
 		if locked {
-			answerCallback(bot, query.ID, "Слишком много неверных ответов.")
+			answerCallback(bot, query.ID, texts.TooManyAttempts)
 			if challenge.MessageID != 0 {
 				if err := deleteMessage(bot, chatID, challenge.MessageID); err != nil {
 					log.Printf("delete failed captcha message %d in chat %d: %s", challenge.MessageID, chatID, safeTelegramError(err, cfg.BotToken))
@@ -343,30 +351,30 @@ func handleCallback(bot telegramClient, store *captcha.Store, probationStore *pr
 			return
 		}
 		if remaining > 0 {
-			answerCallback(bot, query.ID, fmt.Sprintf("Неверно. Осталось попыток: %d.", remaining))
+			answerCallback(bot, query.ID, texts.WrongRemaining(remaining))
 			return
 		}
-		answerCallback(bot, query.ID, "Неверно. Попробуйте еще раз.")
+		answerCallback(bot, query.ID, texts.WrongTryAgain)
 		return
 	}
 
 	if cfg.ProbationEnabled {
 		if err := restrictUserForProbation(bot, chatID, userID, cfg.ProbationDuration); err != nil {
 			log.Printf("probation restrict user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
-			answerCallback(bot, query.ID, "Ответ верный, но бот не смог включить проверочный режим. Проверьте права администратора.")
+			answerCallback(bot, query.ID, texts.ProbationFailed)
 			return
 		}
 		probationStore.Add(chatID, userID, cfg.ProbationDuration, time.Now())
 	} else {
 		if err := unrestrictUser(bot, chatID, userID); err != nil {
 			log.Printf("unrestrict user %d in chat %d: %s", userID, chatID, safeTelegramError(err, cfg.BotToken))
-			answerCallback(bot, query.ID, "Ответ верный, но бот не смог вернуть права. Проверьте права администратора.")
+			answerCallback(bot, query.ID, texts.UnrestrictFailed)
 			return
 		}
 	}
 
 	store.Delete(chatID, userID)
-	answerCallback(bot, query.ID, "Готово, добро пожаловать!")
+	answerCallback(bot, query.ID, texts.Success)
 	if challenge.MessageID != 0 {
 		if err := deleteMessage(bot, chatID, challenge.MessageID); err != nil {
 			log.Printf("delete passed captcha message %d in chat %d: %s", challenge.MessageID, chatID, safeTelegramError(err, cfg.BotToken))
@@ -442,8 +450,9 @@ func cleanupExpired(bot *tgbotapi.BotAPI, store *captcha.Store, probationStore *
 }
 
 func captchaMessage(chatID int64, user tgbotapi.User, challenge captcha.Challenge, timeout time.Duration) tgbotapi.MessageConfig {
+	texts := captchaText(userLocale(&user))
 	text := fmt.Sprintf(
-		"%s, подтвердите, что вы человек.\n\nРешите пример: <b>%s</b>\nВремя: %s",
+		texts.Prompt,
 		userMention(&user),
 		challenge.Question,
 		timeout.Round(time.Second),
@@ -463,6 +472,61 @@ func captchaMessage(chatID int64, user tgbotapi.User, challenge captcha.Challeng
 	msg.ParseMode = tgbotapi.ModeHTML
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return msg
+}
+
+type captchaMessages struct {
+	Prompt           string
+	OtherUser        string
+	Expired          string
+	TooManyAttempts  string
+	WrongTryAgain    string
+	ProbationFailed  string
+	UnrestrictFailed string
+	Success          string
+	WrongRemaining   func(int) string
+}
+
+func userLocale(user *tgbotapi.User) locale {
+	if user == nil {
+		return localeEN
+	}
+	languageCode := strings.ToLower(strings.TrimSpace(user.LanguageCode))
+	if strings.HasPrefix(languageCode, "ru") {
+		return localeRU
+	}
+	return localeEN
+}
+
+func captchaText(loc locale) captchaMessages {
+	if loc == localeRU {
+		return captchaMessages{
+			Prompt:           "%s, подтвердите, что вы человек.\n\nРешите пример: <b>%s</b>\nВремя: %s",
+			OtherUser:        "Это капча другого участника.",
+			Expired:          "Проверка уже истекла.",
+			TooManyAttempts:  "Слишком много неверных ответов.",
+			WrongTryAgain:    "Неверно. Попробуйте еще раз.",
+			ProbationFailed:  "Ответ верный, но бот не смог включить проверочный режим. Проверьте права администратора.",
+			UnrestrictFailed: "Ответ верный, но бот не смог вернуть права. Проверьте права администратора.",
+			Success:          "Готово, добро пожаловать!",
+			WrongRemaining: func(remaining int) string {
+				return fmt.Sprintf("Неверно. Осталось попыток: %d.", remaining)
+			},
+		}
+	}
+
+	return captchaMessages{
+		Prompt:           "%s, please confirm that you are human.\n\nSolve this: <b>%s</b>\nTime limit: %s",
+		OtherUser:        "This captcha belongs to another member.",
+		Expired:          "This verification has expired.",
+		TooManyAttempts:  "Too many wrong answers.",
+		WrongTryAgain:    "Wrong answer. Please try again.",
+		ProbationFailed:  "Correct answer, but the bot could not enable verification mode. Please check admin permissions.",
+		UnrestrictFailed: "Correct answer, but the bot could not restore your permissions. Please check admin permissions.",
+		Success:          "Done, welcome!",
+		WrongRemaining: func(remaining int) string {
+			return fmt.Sprintf("Wrong answer. Attempts left: %d.", remaining)
+		},
+	}
 }
 
 func restrictUser(bot telegramClient, chatID int64, userID int64) error {

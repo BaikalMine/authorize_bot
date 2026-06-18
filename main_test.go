@@ -89,6 +89,50 @@ func TestTelegramNetworksFallbackOrder(t *testing.T) {
 	}
 }
 
+func TestUserLocaleUsesRussianOnlyForRuLanguageCodes(t *testing.T) {
+	if got := userLocale(&tgbotapi.User{LanguageCode: "ru"}); got != localeRU {
+		t.Fatalf("expected ru locale, got %s", got)
+	}
+	if got := userLocale(&tgbotapi.User{LanguageCode: "ru-RU"}); got != localeRU {
+		t.Fatalf("expected ru-RU locale, got %s", got)
+	}
+	if got := userLocale(&tgbotapi.User{LanguageCode: "en"}); got != localeEN {
+		t.Fatalf("expected en locale, got %s", got)
+	}
+	if got := userLocale(&tgbotapi.User{}); got != localeEN {
+		t.Fatalf("expected empty language code to use English, got %s", got)
+	}
+}
+
+func TestCaptchaMessageUsesEnglishForNonRussianUser(t *testing.T) {
+	message := captchaMessage(
+		-100,
+		tgbotapi.User{ID: 42, FirstName: "John", LanguageCode: "en"},
+		captcha.Challenge{Question: "2 + 2 = ?", Options: []int{3, 4, 5, 6}},
+		time.Minute,
+	)
+
+	if !strings.Contains(message.Text, "please confirm that you are human") {
+		t.Fatalf("expected English captcha text, got %q", message.Text)
+	}
+	if strings.Contains(message.Text, "подтвердите") {
+		t.Fatalf("did not expect Russian captcha text, got %q", message.Text)
+	}
+}
+
+func TestCaptchaMessageUsesRussianForRussianUser(t *testing.T) {
+	message := captchaMessage(
+		-100,
+		tgbotapi.User{ID: 42, FirstName: "Иван", LanguageCode: "ru"},
+		captcha.Challenge{Question: "2 + 2 = ?", Options: []int{3, 4, 5, 6}},
+		time.Minute,
+	)
+
+	if !strings.Contains(message.Text, "подтвердите, что вы человек") {
+		t.Fatalf("expected Russian captcha text, got %q", message.Text)
+	}
+}
+
 func TestHandleMessageSkipsCaptchaWhenRestrictFails(t *testing.T) {
 	bot := &fakeTelegramClient{requestErr: errors.New("restrict failed")}
 	store := captcha.NewStore(captcha.Limits{})
