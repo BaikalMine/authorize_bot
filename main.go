@@ -657,6 +657,10 @@ func messageHasLink(message *tgbotapi.Message) bool {
 }
 
 func isKnownSpamMessage(message *tgbotapi.Message) bool {
+	if isQuoteBaitSpamMessage(message) {
+		return true
+	}
+
 	if !messageHasLink(message) {
 		return false
 	}
@@ -680,6 +684,51 @@ func isKnownSpamMessage(message *tgbotapi.Message) bool {
 		return true
 	}
 	return score >= 2
+}
+
+func isQuoteBaitSpamMessage(message *tgbotapi.Message) bool {
+	rawText := strings.ToLower(spamText(message))
+	text := normalizeRepeatedRunes(rawText)
+	rawTrimmed := trimSpamToken(rawText)
+	trimmed := trimSpamToken(text)
+
+	if trimmed == "\u0440\u0430\u0431\u043e\u0447\u0438\u0439" && rawTrimmed != trimmed {
+		return true
+	}
+
+	nordVPNMarkers := []string{
+		"nordvpn",
+		"\u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u044b\u0439 \u0432\u043f\u043d",
+		"\u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u044b\u0439 \u043f\u0440\u043e\u043f\u0443\u0441\u043a",
+		"\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442",
+		"\u043d\u0435\u0443\u0431\u0438\u0432\u0430\u0435\u043c\u044b\u0439",
+		"\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u043a",
+		"\u0433\u043b\u0443\u0448\u0438\u043b\u043a",
+	}
+	score := 0
+	for _, marker := range nordVPNMarkers {
+		if strings.Contains(text, marker) {
+			score++
+		}
+	}
+	return strings.Contains(text, "nordvpn") && score >= 2
+}
+
+func trimSpamToken(value string) string {
+	return strings.Trim(value, " \t\r\n.,!?;:-_\u2013\u2014\u2026\"'`")
+}
+
+func normalizeRepeatedRunes(value string) string {
+	var builder strings.Builder
+	var last rune
+	for _, current := range value {
+		if current == last {
+			continue
+		}
+		builder.WriteRune(current)
+		last = current
+	}
+	return builder.String()
 }
 
 func spamText(message *tgbotapi.Message) string {
